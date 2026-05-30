@@ -75,13 +75,19 @@ class AsyncStatsCallbackHandler(AsyncCallbackHandler):
 
     async def on_llm_end(self, response, *args, **kwargs):
         self.all_times.append(round(time.time() - self.start_time, 2))
-        if not self.stream:
-            # if not streaming mode, on_llm_end response is collected
-            # so we can use this stats directly
-            token_usage = response.llm_output["token_usage"]
-            self.input_tokens += token_usage["prompt_tokens"]
-            self.output_tokens += token_usage["completion_tokens"]
+        if self.stream:
+            return
+        # Some providers (and our test stubs) do not populate ``llm_output``.
+        # Skip token accounting in that case rather than raising in the
+        # callback chain, which corrupts subsequent observations.
+        llm_output = getattr(response, "llm_output", None) or {}
+        token_usage = llm_output.get("token_usage") if isinstance(llm_output, dict) else None
+        if not isinstance(token_usage, dict):
             self.cnt += 1
+            return
+        self.input_tokens += int(token_usage.get("prompt_tokens", 0) or 0)
+        self.output_tokens += int(token_usage.get("completion_tokens", 0) or 0)
+        self.cnt += 1
 
     def reset(self) -> None:
         self.cnt = 0

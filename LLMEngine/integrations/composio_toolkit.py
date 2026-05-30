@@ -168,14 +168,20 @@ class ComposioToolkit:
     def _wrap_tool(self, spec: Dict[str, Any]) -> StructuredTool:
         slug = spec["name"]
         description = self._build_description(spec)
-        args_schema = self._schema_to_pydantic(slug, spec.get("parameters") or {})
+        params = spec.get("parameters") or {}
+        args_schema = self._schema_to_pydantic(slug, params)
+        property_order: List[str] = list((params.get("properties") or {}).keys())
 
-        async def _execute(**kwargs: Any) -> str:
-            return await self._call_composio(slug, kwargs)
+        async def _execute(*args: Any, **kwargs: Any) -> str:
+            # The engine passes args positionally (parsed from the planner
+            # output ``slug(arg1, arg2, ...)``). Zip them onto the JSON-Schema
+            # property order; explicit kwargs win.
+            payload: Dict[str, Any] = {}
+            for name, value in zip(property_order, args):
+                payload[name] = value
+            payload.update(kwargs)
+            return await self._call_composio(slug, payload)
 
-        # StructuredTool.from_function infers the arg list from the coroutine
-        # signature, but Composio tools have dynamic schemas, so we hand it
-        # the pydantic model directly and a coroutine that takes **kwargs.
         return StructuredTool(
             name=self._tool_name(slug),
             description=description,
