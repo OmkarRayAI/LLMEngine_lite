@@ -370,3 +370,39 @@ Working examples in [`examples/`](examples/):
 - `examples/rag_llmwiki.py` — RAG over a local wiki
 - `examples/composio_gmail_calendar.py` — Gmail + Calendar workflow
 
+## Run budgets and journal (inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch))
+
+A run can have a hard wall-clock and/or token cap. The engine checks the budget
+between iterations (never mid-tool), and aborts cleanly with
+`status="budget_exceeded"`:
+
+```python
+result = await engine.run(
+    question="...",
+    tools=[my_tool],
+    max_seconds=300,           # 5-minute clock, like autoresearch
+    max_total_tokens=200_000,
+)
+print(result.status, result.duration_s, result.replans)
+```
+
+Every completed run can be appended to a TSV ledger (one row per run,
+human-readable, grep-able):
+
+```python
+result = await engine.run(
+    question="Find latest open issues",
+    tools=[my_tool],
+    journal_path="runs.tsv",
+    journal_tag="experiment-A",
+)
+```
+
+Schema:
+
+```
+timestamp   duration_s   replans   tokens   status   tag   answer_excerpt
+```
+
+Journal writes are best-effort and never raise.
+
