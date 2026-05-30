@@ -16,9 +16,11 @@ from __future__ import annotations
 import time
 from typing import Any, List, Optional, Sequence, Union
 
+from .budget import Budget
 from .config import RunConfig, RunResult, ToolLike
 from .default_prompts import DEFAULT_JOINNER_PROMPT, DEFAULT_PLANNER_PROMPT
 from .events import EventLog
+from .journal import append_run as journal_append_run
 from .llm_compiler import LLMCompiler
 from .logger_utils import logger
 from .tools.tool_generator import ToolGenerator
@@ -104,6 +106,9 @@ class LLMEngine:
             logger.warning("LLMEngine.run was called with no tools resolved.")
         logger.info("LLMEngine using %d tool(s)", len(resolved_tools))
 
+        budget = Budget(
+            max_seconds=cfg.max_seconds, max_total_tokens=cfg.max_total_tokens
+        )
         input_dict = {
             "input": cfg.question,
             "is_table_format": cfg.is_table_format,
@@ -120,9 +125,15 @@ class LLMEngine:
             "donts": cfg.donts,
             "meta_example": cfg.meta_example,
             "tools": resolved_tools,
+            "budget": budget,
         }
 
-        result, elapsed = await self.arun_and_time(self.agent.acall, input_dict, callbacks=None)
+        status = "ok"
+        try:
+            result, elapsed = await self.arun_and_time(self.agent.acall, input_dict, callbacks=None)
+        except Exception:
+            status = "error"
+            raise
 
         if isinstance(result, dict):
             answer = result.get(self.agent.output_key, "")
@@ -131,6 +142,7 @@ class LLMEngine:
             tasks = result.get("tasks", {})
             replans = int(result.get("replans", 0))
             events = result.get("events", self.event_log.events)
+            status = result.get("status", status)
         else:
             answer = str(result)
             thinking = ""
@@ -153,8 +165,21 @@ class LLMEngine:
             tasks=tasks,
             replans=replans,
             duration_s=elapsed,
+            status=status,
         )
         self.last_run = rr
+
+        # Append-only run journal — best-effort, swallows its own errors.
+        if cfg.journal_path:
+            journal_append_run(
+                cfg.journal_path,
+                duration_s=elapsed,
+                replans=replans,
+                stats=stats,
+                status=status,
+                answer=answer,
+                tag=cfg.journal_tag,
+            )
         return rr
 
     async def run(
@@ -172,6 +197,10 @@ class LLMEngine:
         planner_example_prompt: str = "",
         joinner_prompt: str = "",
         tool_path: Optional[str] = None,
+        max_seconds: Optional[float] = None,
+        max_total_tokens: Optional[int] = None,
+        journal_path: Optional[str] = None,
+        journal_tag: str = "",
     ) -> RunResult:
         """Keyword-arg entrypoint. Returns :class:`RunResult`.
 
@@ -193,5 +222,9 @@ class LLMEngine:
             donts=donts,
             meta_example=meta_example,
             is_table_format=self.is_tables,
+            max_seconds=max_seconds,
+            max_total_tokens=max_total_tokens,
+            journal_path=journal_path,
+            journal_tag=journal_tag,
         )
         return await self.run_config(cfg)

@@ -12,6 +12,7 @@ from langchain.llms import BaseLLM
 from langchain.llms.base import BaseLLM
 from langchain.prompts.base import StringPromptValue
 
+from .budget import Budget
 from .callbacks import AsyncStatsCallbackHandler
 from .chain import Chain
 from .constants import JOINNER_REPLAN, JOINNER_FINISH
@@ -290,6 +291,8 @@ class LLMCompiler(Chain, extra="allow"):
         joinner_prompt_final = inputs.get('joinner_prompt_final') or joinner_prompt
 
         events = self.event_log
+        budget: Budget = inputs.get("budget") or Budget()
+        budget.start()
         events.emit("run_start", question=inputs.get("input"))
 
         contexts = []
@@ -298,6 +301,7 @@ class LLMCompiler(Chain, extra="allow"):
         answer = ""  # Initialize answer to prevent UnboundLocalError
         is_final_iter = False  # Initialize is_final_iter to prevent UnboundLocalError
         replans = 0
+        status = "ok"
 
         # Get meta data with thinking process
         meta_data_result = await self.meta_planner.retrieve_meta_data(inputs['input'],inputs['purpose'],inputs['instructions'],inputs["tools"],self.llm,None,inputs.get("query_understanding", ""),inputs.get("temporal_context", ""),inputs.get("research_approach", ""),inputs.get("dos", ""),inputs.get("donts", ""),inputs.get("meta_example", ""))
@@ -309,6 +313,20 @@ class LLMCompiler(Chain, extra="allow"):
         for i in range(self.max_replans):
             is_first_iter = i == 0
             is_final_iter = i == self.max_replans - 1
+
+            # Budget tripwire — checked at iteration boundaries so we never
+            # interrupt a tool call mid-flight.
+            if budget.exceeded(self.get_all_stats()):
+                status = "budget_exceeded"
+                logger.info("Aborting run: %s", budget.reason(self.get_all_stats()))
+                events.emit(
+                    "run_end",
+                    answer=answer,
+                    replans=replans,
+                    status=status,
+                    reason=budget.reason(self.get_all_stats()),
+                )
+                break
 
             task_fetching_unit = TaskFetchingUnit()
             #llm,example_prompt,example_prompt_replan,tools,stop,inputs,meta_data,is_replan,callbacks
@@ -409,9 +427,11 @@ class LLMCompiler(Chain, extra="allow"):
             log("Contexts:\n", formatted_contexts, block=True)
             inputs["context"] = formatted_contexts
 
-        if is_final_iter:
+        if is_final_iter and status == "ok":
             log("Reached max replan limit.")
-        events.emit("run_end", answer=answer, replans=replans)
+        # Only emit run_end here if the budget path didn't already emit it.
+        if status != "budget_exceeded":
+            events.emit("run_end", answer=answer, replans=replans, status=status)
         return {
             self.output_key: answer,
             "thinking_process": thinking_process,
@@ -419,4 +439,5 @@ class LLMCompiler(Chain, extra="allow"):
             "stats": self.get_all_stats(),
             "tasks": dict(getattr(task_fetching_unit, "tasks", {})),
             "replans": replans,
+            "status": status,
         }

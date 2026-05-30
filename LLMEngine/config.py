@@ -46,6 +46,19 @@ class RunConfig:
 
     is_table_format: bool = False
 
+    # Run budgets — inspired by karpathy/autoresearch's fixed 5-minute clock.
+    # When set, the engine aborts the current iteration at the boundary and
+    # returns a RunResult with whatever has been accumulated. ``None`` means
+    # no limit.
+    max_seconds: Optional[float] = None
+    max_total_tokens: Optional[int] = None
+
+    # Optional path to an append-only TSV journal. Each completed run appends
+    # one row: timestamp, duration_s, replans, total_tokens, status, answer_excerpt.
+    # ``None`` disables journalling.
+    journal_path: Optional[str] = None
+    journal_tag: str = ""
+
 
 @dataclass
 class RunResult:
@@ -59,6 +72,9 @@ class RunResult:
     tasks: Dict[Any, Any] = field(default_factory=dict)
     replans: int = 0
     duration_s: float = 0.0
+    # ``ok`` (normal finish), ``budget_exceeded`` (max_seconds / max_total_tokens
+    # tripped), ``error`` (exception bubbled out — see logger).
+    status: str = "ok"
 
     # Backwards-compatible tuple unpacking: ``answer, _, thinking = engine.run(...)``
     def __iter__(self):
