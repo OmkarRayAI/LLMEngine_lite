@@ -238,8 +238,43 @@ async def main():
 
 
 if __name__ == "__main__":
-    # Set the event loop policy for Windows compatibility
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    import sys
+    # Only switch policy on Windows; on macOS/Linux this attribute does not exist.
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
 ```
+
+## New: structured `RunResult` and event log
+
+`engine.run(...)` now returns a `RunResult` dataclass while still supporting the
+legacy tuple unpacking shape:
+
+```python
+result = await engine.run(question=..., tools=[my_tool])
+print(result.answer)        # final answer
+print(result.meta_plan)     # meta-plan from the meta-planner
+print(result.replans)       # number of replan iterations
+print(result.duration_s)    # wall-clock seconds
+print(result.stats)         # token + timing stats (always-on)
+for evt in result.events:   # structured event stream
+    print(evt.type, evt.payload)
+
+# Backwards-compatible tuple form still works:
+answer, _, thinking = await engine.run(...)
+```
+
+You can also pass tool *instances* directly (no `tool_path` needed) by handing
+the engine objects that expose `name`/`description` (e.g. `StructuredTool`):
+
+```python
+from LLMEngine import LLMEngine, RunConfig
+
+cfg = RunConfig(question="...", tools=[my_structured_tool, another_tool])
+result = await engine.run_config(cfg)
+```
+
+If you don't pass `planner_example_prompt` / `joinner_prompt`, sensible domain-
+neutral defaults are used (see `LLMEngine.default_prompts`). Override them only
+when you have domain-specific exemplars.
 

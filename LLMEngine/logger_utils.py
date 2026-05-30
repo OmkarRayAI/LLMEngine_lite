@@ -1,4 +1,5 @@
 import json
+import logging
 from collections import defaultdict
 
 import numpy as np
@@ -8,6 +9,10 @@ from typing import List
 
 # Global variable to toggle logging
 LOG_ENABLED = True
+
+# A namespaced logger for callers that prefer the stdlib logging contract over
+# the legacy ``log()`` print shim. Configuration is left to the host app.
+logger = logging.getLogger("LLMEngine")
 
 
 class Logger:
