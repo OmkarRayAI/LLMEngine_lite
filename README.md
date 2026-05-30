@@ -278,3 +278,95 @@ If you don't pass `planner_example_prompt` / `joinner_prompt`, sensible domain-
 neutral defaults are used (see `LLMEngine.default_prompts`). Override them only
 when you have domain-specific exemplars.
 
+## RAG over an LLM-maintained wiki
+
+LLMEngine ships a tiny `Retriever` protocol and a built-in `LLMWikiRetriever`
+that searches a directory of curated markdown laid out per
+[Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f):
+
+```
+my-wiki/
+    index.md
+    log.md
+    AGENTS.md
+    wiki/                # curated, interlinked summary pages
+    raw/                 # raw sources (optional)
+```
+
+```python
+from LLMEngine import LLMEngine, LLMWikiRetriever, KnowledgeTool
+
+retriever = LLMWikiRetriever(root="./my-wiki")
+kb = KnowledgeTool(retriever, name="wiki",
+                   description="wiki(query, k=5) — search the team wiki")
+
+result = await engine.run(
+    question="What did Indian private banks report in FY25?",
+    tools=[kb.get_tool()],
+)
+```
+
+The retriever:
+
+- Prefers `wiki/` pages (curated synthesis) over `raw/` (sources) and gives
+  `index.md` an extra boost.
+- Skips `log.md` (append-only chronology — noisy for retrieval).
+- Parses YAML frontmatter (`title`, `type`, `sources`, `updated`) into doc metadata.
+- Uses inline BM25 — **no extra dependencies, no embeddings**. At wiki scale
+  (~hundreds of pages) Karpathy's gist argues this is enough; for larger
+  corpora, swap in any `Retriever` (vector store, hybrid, etc.) — the
+  contract is just `aretrieve(query, k) -> List[Doc]`.
+
+Bring your own retriever:
+
+```python
+class MyRetriever:
+    async def aretrieve(self, query: str, k: int = 5):
+        return [Doc(text=..., source=..., score=...)]
+
+kb = KnowledgeTool(MyRetriever(), name="vectors", description="...")
+```
+
+## Gmail, Calendar, Slack via Composio
+
+`ComposioToolkit` exposes any [Composio](https://composio.dev) toolkit (Gmail,
+Google Calendar, Slack, GitHub, …) as native LLMEngine tools. Auth (OAuth,
+refresh, token storage) stays inside Composio — LLMEngine just plans calls.
+
+```bash
+pip install composio
+export COMPOSIO_API_KEY=...
+```
+
+```python
+from LLMEngine import LLMEngine
+from LLMEngine.integrations import ComposioToolkit
+
+toolkit = ComposioToolkit(
+    user_id="omkar@example.com",
+    toolkits=["GMAIL", "GOOGLECALENDAR"],
+)
+
+result = await engine.run(
+    question="Find unread email from Alex this week and schedule a follow-up "
+             "for tomorrow afternoon.",
+    tools=toolkit.get_tools(),
+)
+```
+
+Each Composio tool's JSON Schema is converted to a pydantic model, so the
+planner sees real argument types — not blobs of free-form text. Errors from
+upstream services are returned as JSON strings the joiner can reason about
+(`{"error": "...", "tool": "GMAIL_SEND_EMAIL"}`).
+
+You can also restrict to specific tool slugs:
+
+```python
+ComposioToolkit(user_id="...", tools=["GMAIL_SEND_EMAIL", "GOOGLECALENDAR_CREATE_EVENT"])
+```
+
+Working examples in [`examples/`](examples/):
+
+- `examples/rag_llmwiki.py` — RAG over a local wiki
+- `examples/composio_gmail_calendar.py` — Gmail + Calendar workflow
+
