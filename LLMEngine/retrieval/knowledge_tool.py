@@ -52,7 +52,12 @@ class KnowledgeTool:
     async def _aretrieve(self, query: str, k: int = 5) -> str:
         # Clamp k inline rather than via pydantic validators so a planner
         # over-request just degrades gracefully instead of erroring out.
-        k = max(1, min(int(k or 5), 20))
+        # Real LLMs occasionally hand non-int values; coerce permissively
+        # and fall back on the default, never raise from retrieval.
+        try:
+            k = max(1, min(int(k or 5), 20))
+        except (TypeError, ValueError):
+            k = 5
         # Support both sync and async retrievers.
         aretrieve = getattr(self.retriever, "aretrieve", None)
         if aretrieve is not None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Collection, Dict, List, Optional
 
 from .logger_utils import log
@@ -58,10 +58,13 @@ class Task:
     thought: Optional[str] = None
     observation: Optional[str] = None
     is_join: bool = False
+    # Keyword arguments emitted by the planner as ``name(arg, key=value)``.
+    # Default-empty so existing code paths that never set this still work.
+    kwargs: Dict[str, Any] = field(default_factory=dict)
 
     async def __call__(self) -> Any:
         log("running task")
-        x = await self.tool(*self.args)
+        x = await self.tool(*self.args, **self.kwargs)
         log("done task")
         return x
 
@@ -125,10 +128,22 @@ class TaskFetchingUnit:
 
     async def _run_task(self, task: Task):
         self._preprocess_args(task)
-        if not task.is_join:
-            observation = await task()
-            task.observation = observation
-        self.tasks_done[task.idx].set()
+        try:
+            if not task.is_join:
+                try:
+                    task.observation = await task()
+                except Exception as exc:
+                    # A tool that raises must not leave the task "running"
+                    # forever — the scheduler waits on tasks_done.is_set().
+                    # Surface the error as an observation so the joiner can
+                    # see it and decide to replan.
+                    log(f"task {task.idx} ({task.name}) raised: {exc!r}")
+                    task.observation = (
+                        f"ERROR: tool {task.name!r} raised "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+        finally:
+            self.tasks_done[task.idx].set()
 
     async def schedule(self):
         """Run all tasks in self.tasks in parallel, respecting dependencies."""
