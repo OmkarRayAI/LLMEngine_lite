@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import ast
 import csv
 from io import StringIO
 import re
-from typing import Any, Sequence, Union
+from typing import Any, Optional, Sequence, Tuple, Union
 
 from langchain.agents.agent import AgentOutputParser
 from langchain.schema import OutputParserException
@@ -63,30 +65,62 @@ class LLMCompilerPlanParser(AgentOutputParser, extra="allow"):
 ### Helper functions
 
 
-def _parse_llm_compiler_action_args(args: str) -> list[Any]:
-    """Parse arguments from a string, handling special characters and quoted strings."""
+def _parse_llm_compiler_action_args(args: str) -> Tuple[tuple, dict]:
+    """Parse arguments from the planner's ``name(arg1, arg2, key=value)`` form.
+
+    Returns ``(positional_args, keyword_args)``. Real LLMs (Kimi, GPT, Claude)
+    routinely emit ``tool("query", k=3)``-style kwargs even when not asked to;
+    treating them as positional strings produces nonsense like ``"k=3"`` being
+    coerced to int. We split here once, at the parser, so downstream code
+    sees a clean call signature.
+    """
     if args == "":
-        return ()
+        return (), {}
 
     # Use csv.reader to split by commas, preserving quoted strings
     csv_reader = csv.reader(StringIO(args), skipinitialspace=True)
-    parsed_args = next(csv_reader)
+    raw_pieces = next(csv_reader)
 
-    # Convert each argument using ast.literal_eval if needed
-    evaluated_args = []
-    for arg in parsed_args:
-        try:
-            # Attempt to parse as Python literal (e.g., number, string, list)
-            evaluated_args.append(ast.literal_eval(arg))
-        except (ValueError, SyntaxError):
-            # If not a valid Python literal, keep as string
-            evaluated_args.append(arg)
+    positional: list[Any] = []
+    kwargs: dict[str, Any] = {}
+    for piece in raw_pieces:
+        # Detect ``name=value`` only when ``name`` is a bare Python identifier
+        # before the first ``=``. This avoids treating ``"a=b"`` (inside a
+        # string literal) as a kwarg, since that is one csv field already.
+        keyword = _split_kwarg(piece)
+        if keyword is not None:
+            name, value = keyword
+            kwargs[name] = _coerce_literal(value)
+        else:
+            positional.append(_coerce_literal(piece))
 
-    # Convert to tuple if only one argument
-    if len(evaluated_args) == 1:
-        return (evaluated_args[0],)
+    return tuple(positional), kwargs
 
-    return tuple(evaluated_args)
+
+_KWARG_HEAD = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)")
+
+
+def _split_kwarg(piece: str) -> Optional[Tuple[str, str]]:
+    """If ``piece`` starts with ``identifier=…``, return ``(identifier, rest)``.
+
+    Returns ``None`` for plain positional values (including string literals
+    that happen to contain an ``=`` inside them, since those are already a
+    single csv field that does not start with a bare identifier).
+    """
+    m = _KWARG_HEAD.match(piece)
+    if not m:
+        return None
+    name = m.group(1)
+    value = piece[m.end():]
+    return name, value
+
+
+def _coerce_literal(raw: str) -> Any:
+    """Best-effort: parse Python literals (numbers, strings, lists), else str."""
+    try:
+        return ast.literal_eval(raw)
+    except (ValueError, SyntaxError):
+        return raw
 
 
 def _find_tool(
@@ -128,7 +162,7 @@ def instantiate_task(
     thought: str,
 ) -> Task:
     dependencies = _get_dependencies_from_graph(idx, tool_name, args)
-    args = _parse_llm_compiler_action_args(args)
+    parsed_args, parsed_kwargs = _parse_llm_compiler_action_args(args)
     if tool_name == "join":
         # join does not have a tool
         tool_func = lambda x: None
@@ -144,7 +178,8 @@ def instantiate_task(
         idx=idx,
         name=tool_name,
         tool=tool_func,
-        args=args,
+        args=parsed_args,
+        kwargs=parsed_kwargs,
         dependencies=dependencies,
         stringify_rule=stringify_rule,
         thought=thought,
